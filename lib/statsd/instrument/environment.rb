@@ -35,6 +35,14 @@ module StatsD
 
       def initialize(env)
         @env = env
+        if env.key?("STATSD_FLUSH_INTERVAL")
+          value = env["STATSD_FLUSH_INTERVAL"]
+          if Float(value) == 0.0
+            warn("STATSD_FLUSH_INTERVAL=#{value} is deprecated, please set STATSD_BUFFER_CAPACITY=0 instead.")
+          else
+            warn("STATSD_FLUSH_INTERVAL=#{value} is deprecated and has no effect, please remove it.")
+          end
+        end
       end
 
       # Detects the current environment, either by asking Rails, or by inspecting environment variables.
@@ -78,8 +86,16 @@ module StatsD
         env.key?("STATSD_DEFAULT_TAGS") ? env.fetch("STATSD_DEFAULT_TAGS").split(",") : nil
       end
 
-      def statsd_flush_interval
-        Float(env.fetch("STATSD_FLUSH_INTERVAL", 1.0))
+      def statsd_buffer_capacity
+        Integer(env.fetch("STATSD_BUFFER_CAPACITY", StatsD::Instrument::BatchedUDPSink::DEFAULT_BUFFER_CAPACITY))
+      end
+
+      def statsd_batching?
+        statsd_buffer_capacity > 0 && Float(env.fetch("STATSD_FLUSH_INTERVAL", 1.0)) > 0.0
+      end
+
+      def statsd_max_packet_size
+        Float(env.fetch("STATSD_MAX_PACKET_SIZE", StatsD::Instrument::BatchedUDPSink::DEFAULT_MAX_PACKET_SIZE))
       end
 
       def client
@@ -89,8 +105,12 @@ module StatsD
       def default_sink_for_environment
         case environment
         when "production", "staging"
-          if statsd_flush_interval > 0.0
-            StatsD::Instrument::BatchedUDPSink.for_addr(statsd_addr, flush_interval: statsd_flush_interval)
+          if statsd_batching?
+            StatsD::Instrument::BatchedUDPSink.for_addr(
+              statsd_addr,
+              buffer_capacity: statsd_buffer_capacity,
+              max_packet_size: statsd_max_packet_size,
+            )
           else
             StatsD::Instrument::UDPSink.for_addr(statsd_addr)
           end

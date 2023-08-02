@@ -1,6 +1,6 @@
 # StatsD client for Ruby apps
 
-This is a ruby client for statsd (http://github.com/etsy/statsd). It provides
+This is a ruby client for statsd (https://github.com/statsd/statsd). It provides
 a lightweight way to track and measure metrics in your application.
 
 We call out to statsd by sending data over a UDP socket. UDP sockets are fast,
@@ -10,8 +10,8 @@ because it means your code doesn't get bogged down trying to log statistics.
 We send data to statsd several times per request and haven't noticed a
 performance hit.
 
-For more information about StatsD, see the [README of the Etsy
-project](http://github.com/etsy/statsd).
+For more information about StatsD, see the [README of the StatsD
+project](https://github.com/statsd/statsd).
 
 ## Configuration
 
@@ -21,13 +21,13 @@ The following environment variables are supported:
 - `STATSD_ADDR`: (default `localhost:8125`) The address to send the StatsD UDP
   datagrams to.
 - `STATSD_IMPLEMENTATION`: (default: `datadog`). The StatsD implementation you
-  are using. `statsd`, `statsite` and `datadog` are supported. Some features
+  are using. `statsd` and `datadog` are supported. Some features
   are only available on certain implementations,
 - `STATSD_ENV`: The environment StatsD will run in. If this is not set
   explicitly, this will be determined based on other environment variables,
   like `RAILS_ENV` or `ENV`. The library will behave differently:
 
-  - In the **production** and **staging** environment, thre library will
+  - In the **production** and **staging** environment, the library will
     actually send UDP packets.
   - In the **test** environment, it will swallow all calls, but allows you to
     capture them for testing purposes. See below for notes on writing tests.
@@ -42,9 +42,18 @@ The following environment variables are supported:
   overridden in a metric method call.
 - `STATSD_DEFAULT_TAGS`: A comma-separated list of tags to apply to all metrics.
   (Note: tags are not supported by all implementations.)
-- `STATSD_FLUSH_INTERVAL`: (default: `1.0`) The interval in seconds at which
-  events are sent in batch. Only applicable to the UDP configuration. If set
-  to `0.0`, metrics are sent immediately.
+- `STATSD_BUFFER_CAPACITY`: (default: `5000`) The maximum amount of events that
+  may be buffered before emitting threads will start to block. Increasing this
+  value may help for application generating spikes of events. However if the
+  application emit events faster than they can be sent, increasing it won't help.
+  If set to `0`, batching will be disabled, and events will be sent in individual
+  UDP packets, which is much slower.
+- `STATSD_FLUSH_INTERVAL`: (default: `1`) Deprecated. Setting this to `0` is
+  equivalent to setting `STATSD_BUFFER_CAPACITY` to `0`.
+- `STATSD_MAX_PACKET_SIZE`: (default: `1472`) The maximum size of UDP packets.
+  If your network is properly configured to handle larger packets you may try
+  to increase this value for better performance, but most network can't handle
+  larger packets.
 
 ## StatsD keys
 
@@ -246,6 +255,18 @@ GoogleBase.statsd_count :insert, 'GoogleBase.insert', tags: ['env:production']
 If implementation is not set to `:datadog`, tags will not be included in the UDP packets, and a
 warning is logged to `StatsD.logger`.
 
+You can use lambda function that instead of a list of tags to set the metric tags.
+Like the dynamic metric name, the lambda function must accept two arguments:
+the object the function is being called on and the array of arguments
+passed.
+
+``` ruby
+metric_tagger = lambda { |object, args| { "key": args.first } }
+GoogleBase.statsd_count(:insert, 'GoogleBase.insert', tags: metric_tagger)
+```
+
+> You can only use the dynamic tag while using the instrumentation through metaprogramming methods
+
 ## Testing
 
 This library comes with a module called `StatsD::Instrument::Assertions` and `StatsD::Instrument::Matchers` to help you write tests
@@ -333,6 +354,13 @@ RSpec.describe 'Matchers' do
 
     it 'will pass if there is no matching StatsD call on negative expectation' do
       expect { StatsD.increment('other_counter') }.not_to trigger_statsd_increment('counter')
+    end
+
+    it 'will pass if every statsD call matches its call tag variations' do
+      expect do
+        StatsD.increment('counter', tags: ['variation:a'])
+        StatsD.increment('counter', tags: ['variation:b'])
+      end.to trigger_statsd_increment('counter', times: 1, tags: ["variation:a"]).and trigger_statsd_increment('counter', times: 1, tags: ["variation:b"])
     end
   end
 end

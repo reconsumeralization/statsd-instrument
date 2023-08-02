@@ -43,13 +43,18 @@ module StatsD
 
         def expect_statsd_call(metric_type, metric_name, options, &block)
           metrics = capture_statsd_calls(&block)
-          metrics = metrics.select { |m| m.type == metric_type && m.name == metric_name }
+          metrics = metrics.select do |m|
+            metric_tags = m.tags || []
+            options_tags = options[:tags]
+            tag_matches = options_tags.nil? || RSpec::Matchers::BuiltIn::Match.new(options_tags).matches?(metric_tags)
+            m.type == metric_type && m.name == metric_name && tag_matches
+          end
 
           if metrics.empty?
             raise RSpec::Expectations::ExpectationNotMetError, "No StatsD calls for metric #{metric_name} were made."
           elsif options[:times] && options[:times] != metrics.length
             raise RSpec::Expectations::ExpectationNotMetError, "The numbers of StatsD calls for metric " \
-             "#{metric_name} was unexpected. Expected #{options[:times].inspect}, got #{metrics.length}"
+              "#{metric_name} was unexpected. Expected #{options[:times].inspect}, got #{metrics.length}"
           end
 
           [:sample_rate, :value, :tags].each do |expectation|

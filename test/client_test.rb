@@ -48,8 +48,12 @@ class ClientTest < Minitest::Test
       "STATSD_IMPLEMENTATION" => "statsd",
       "STATSD_ADDR" => "1.2.3.4:8125",
     )
-    client = StatsD::Instrument::Client.from_env(env,
-      prefix: "bar", implementation: "dogstatsd", sink: StatsD::Instrument::NullSink.new)
+    client = StatsD::Instrument::Client.from_env(
+      env,
+      prefix: "bar",
+      implementation: "dogstatsd",
+      sink: StatsD::Instrument::NullSink.new,
+    )
 
     assert_equal(0.1, client.default_sample_rate)
     assert_equal("bar", client.prefix)
@@ -95,7 +99,7 @@ class ClientTest < Minitest::Test
   end
 
   def test_measure_with_block
-    Process.stubs(:clock_gettime).with(Process::CLOCK_MONOTONIC).returns(0.1, 0.2)
+    Process.stubs(:clock_gettime).with(Process::CLOCK_MONOTONIC, :float_millisecond).returns(100.0, 200.0)
     datagrams = @client.capture do
       @client.measure("foo") {}
     end
@@ -128,7 +132,7 @@ class ClientTest < Minitest::Test
   end
 
   def test_distribution_with_block
-    Process.stubs(:clock_gettime).with(Process::CLOCK_MONOTONIC).returns(0.1, 0.2)
+    Process.stubs(:clock_gettime).with(Process::CLOCK_MONOTONIC, :float_millisecond).returns(100.0, 200.0)
     datagrams = @dogstatsd_client.capture do
       @dogstatsd_client.distribution("foo") {}
     end
@@ -137,7 +141,7 @@ class ClientTest < Minitest::Test
   end
 
   def test_latency_emits_ms_metric
-    Process.stubs(:clock_gettime).with(Process::CLOCK_MONOTONIC).returns(0.1, 0.2)
+    Process.stubs(:clock_gettime).with(Process::CLOCK_MONOTONIC, :float_millisecond).returns(100.0, 200.0)
     datagrams = @client.capture do
       @client.latency("foo") {}
     end
@@ -146,7 +150,7 @@ class ClientTest < Minitest::Test
   end
 
   def test_latency_on_dogstatsd_prefers_distribution_metric_type
-    Process.stubs(:clock_gettime).with(Process::CLOCK_MONOTONIC).returns(0.1, 0.2)
+    Process.stubs(:clock_gettime).with(Process::CLOCK_MONOTONIC, :float_millisecond).returns(100.0, 200.0)
     datagrams = @dogstatsd_client.capture do
       @dogstatsd_client.latency("foo") {}
     end
@@ -215,6 +219,20 @@ class ClientTest < Minitest::Test
 
     original_client = StatsD::Instrument::Client.new(sink: mock_sink)
     client_with_other_options = original_client.clone_with_options(prefix: "foo")
+
+    original_client.increment("metric")
+    client_with_other_options.increment("metric")
+  end
+
+  def test_clone_can_remove_prefix
+    # Both clients will use the same sink.
+    mock_sink = mock("sink")
+    mock_sink.stubs(:sample?).returns(true)
+    mock_sink.expects(:<<).with("foo.metric:1|c").returns(mock_sink)
+    mock_sink.expects(:<<).with("metric:1|c").returns(mock_sink)
+
+    original_client = StatsD::Instrument::Client.new(sink: mock_sink, prefix: "foo")
+    client_with_other_options = original_client.clone_with_options(prefix: nil)
 
     original_client.increment("metric")
     client_with_other_options.increment("metric")

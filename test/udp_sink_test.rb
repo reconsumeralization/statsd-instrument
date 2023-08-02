@@ -32,17 +32,18 @@ module UDPSinkTests
     refute(udp_sink.sample?(0.5))
   end
 
-  def test_parallelism
+  def test_concurrency
     udp_sink = build_sink(@host, @port)
-    50.times.map { |i| Thread.new { udp_sink << "foo:#{i}|c" << "bar:#{i}|c" } }
-    datagrams = []
-
-    while @receiver.wait_readable(2)
-      datagram, _source = @receiver.recvfrom(4000)
-      datagrams += datagram.split("\n")
+    threads = 10.times.map do |i|
+      Thread.new do
+        udp_sink << "foo:#{i}|c" << "bar:#{i}|c" << "baz:#{i}|c" << "plop:#{i}|c"
+      end
     end
-
-    assert_equal(100, datagrams.size)
+    threads.each(&:join)
+    udp_sink.shutdown if udp_sink.respond_to?(:shutdown)
+    assert_equal(40, read_datagrams(40).size)
+  ensure
+    threads&.each(&:kill)
   end
 
   class SimpleFormatter < ::Logger::Formatter
@@ -53,18 +54,52 @@ module UDPSinkTests
 
   def test_sends_datagram_in_signal_handler
     udp_sink = build_sink(@host, @port)
-    Signal.trap("USR1") { udp_sink << "exiting:1|c" }
-
-    pid = fork do
-      sleep(5)
+    Signal.trap("USR1") do
+      udp_sink << "exiting:1|c"
+      udp_sink << "exiting:1|d"
     end
 
+    Process.kill("USR1", Process.pid)
+    assert_equal(["exiting:1|c", "exiting:1|d"], read_datagrams(2))
+  ensure
     Signal.trap("USR1", "DEFAULT")
+  end
 
-    Process.kill("USR1", pid)
-    @receiver.wait_readable(1)
-    assert_equal("exiting:1|c", @receiver.recvfrom_nonblock(100).first)
-    Process.kill("KILL", pid)
+  def test_sends_datagram_before_exit
+    udp_sink = build_sink(@host, @port)
+    pid = fork do
+      udp_sink << "exiting:1|c"
+      udp_sink << "exiting:1|d"
+    end
+    Process.wait(pid)
+    assert_equal(["exiting:1|c", "exiting:1|d"], read_datagrams(2))
+  rescue NotImplementedError
+    pass("Fork is not implemented on #{RUBY_PLATFORM}")
+  end
+
+  def test_sends_datagram_in_at_exit_callback
+    udp_sink = build_sink(@host, @port)
+    pid = fork do
+      at_exit do
+        udp_sink << "exiting:1|c"
+        udp_sink << "exiting:1|d"
+      end
+    end
+    Process.wait(pid)
+    assert_equal(["exiting:1|c", "exiting:1|d"], read_datagrams(2))
+  rescue NotImplementedError
+    pass("Fork is not implemented on #{RUBY_PLATFORM}")
+  end
+
+  def test_sends_datagram_when_termed
+    udp_sink = build_sink(@host, @port)
+    fork do
+      udp_sink << "exiting:1|c"
+      udp_sink << "exiting:1|d"
+      Process.kill("TERM", Process.pid)
+    end
+
+    assert_equal(["exiting:1|c", "exiting:1|d"], read_datagrams(2))
   rescue NotImplementedError
     pass("Fork is not implemented on #{RUBY_PLATFORM}")
   end
@@ -73,6 +108,19 @@ module UDPSinkTests
 
   def build_sink(host = @host, port = @port)
     @sink_class.new(host, port)
+  end
+
+  def read_datagrams(count, timeout: ENV["CI"] ? 5 : 1)
+    datagrams = []
+    count.times do
+      if @receiver.wait_readable(timeout)
+        datagrams += @receiver.recvfrom(2000).first.lines(chomp: true)
+        break if datagrams.size >= count
+      else
+        break
+      end
+    end
+    datagrams
   end
 
   class UDPSinkTest < Minitest::Test
@@ -101,8 +149,9 @@ module UDPSinkTests
         seq = sequence("connect_fail_connect_succeed")
         socket.expects(:connect).with("localhost", 8125).in_sequence(seq)
         socket.expects(:send).raises(Errno::EDESTADDRREQ).in_sequence(seq)
+        socket.expects(:close).in_sequence(seq)
         socket.expects(:connect).with("localhost", 8125).in_sequence(seq)
-        socket.expects(:send).returns(1).in_sequence(seq)
+        socket.expects(:send).twice.returns(1).in_sequence(seq)
 
         udp_sink = build_sink("localhost", 8125)
         udp_sink << "foo:1|c"
@@ -110,7 +159,7 @@ module UDPSinkTests
 
         assert_equal(
           "[#{@sink_class}] Resetting connection because of " \
-          "Errno::EDESTADDRREQ: Destination address required\n",
+            "Errno::EDESTADDRREQ: Destination address required\n",
           logs.string,
         )
       ensure
@@ -119,7 +168,7 @@ module UDPSinkTests
     end
   end
 
-  class BatchedUDPSinkTest < Minitest::Test
+  module BatchedUDPSinkTests
     include UDPSinkTests
 
     def setup
@@ -128,28 +177,24 @@ module UDPSinkTests
       @host = @receiver.addr[2]
       @port = @receiver.addr[1]
       @sink_class = StatsD::Instrument::BatchedUDPSink
+      @sinks = []
     end
 
     def teardown
       @receiver.close
+      @sinks.each(&:shutdown)
     end
 
-    def test_parallelism_buffering
-      udp_sink = build_sink(@host, @port)
-      50.times.map do |i|
-        Thread.new do
-          udp_sink << "foo:#{i}|c" << "bar:#{i}|c" << "baz:#{i}|c" << "plop:#{i}|c"
-        end
-      end
+    private
 
-      datagrams = []
-
-      while @receiver.wait_readable(2)
-        datagram, _source = @receiver.recvfrom(1000)
-        datagrams += datagram.split("\n")
-      end
-
-      assert_equal(200, datagrams.size)
+    def build_sink(host = @host, port = @port)
+      sink = @sink_class.new(host, port, buffer_capacity: 50)
+      @sinks << sink
+      sink
     end
+  end
+
+  class BatchedUDPSinkTest < Minitest::Test
+    include BatchedUDPSinkTests
   end
 end

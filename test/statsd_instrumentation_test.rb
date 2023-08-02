@@ -7,7 +7,7 @@ class StatsDInstrumentationTest < Minitest::Test
     class Base
       extend StatsD::Instrument
 
-      def ssl_post(arg)
+      def ssl_post(arg, async: false)
         if arg
           "OK"
         else
@@ -21,25 +21,27 @@ class StatsDInstrumentationTest < Minitest::Test
     end
 
     class Gateway < Base
-      def purchase(arg)
-        ssl_post(arg)
+      def purchase(arg, async: false)
+        ssl_post(arg, async: async)
         true
       rescue
         false
       end
 
-      def self.sync
-        true
+      class << self
+        def sync
+          true
+        end
       end
     end
 
     class UniqueGateway < Base
-      def ssl_post(arg)
+      def ssl_post(arg, async: false)
         { success: arg }
       end
 
-      def purchase(arg)
-        ssl_post(arg)
+      def purchase(arg, async: false)
+        ssl_post(arg, async: async)
       end
     end
   end
@@ -159,6 +161,38 @@ class StatsDInstrumentationTest < Minitest::Test
     ActiveMerchant::UniqueGateway.statsd_remove_count_success(:ssl_post, "ActiveMerchant.Gateway")
   end
 
+  def test_statsd_count_success_tag_error_class
+    ActiveMerchant::Base.statsd_count_success(:ssl_post, "ActiveMerchant.Base", tag_error_class: true)
+
+    assert_statsd_increment("ActiveMerchant.Base.success", tags: nil) do
+      ActiveMerchant::Base.new.ssl_post(true)
+    end
+
+    assert_statsd_increment("ActiveMerchant.Base.failure", tags: ["error_class:RuntimeError"]) do
+      assert_raises(RuntimeError, "Not OK") do
+        ActiveMerchant::Base.new.ssl_post(false)
+      end
+    end
+  ensure
+    ActiveMerchant::Base.statsd_remove_count_success(:ssl_post, "ActiveMerchant.Base")
+  end
+
+  def test_statsd_count_success_tag_error_class_is_opt_in
+    ActiveMerchant::Base.statsd_count_success(:ssl_post, "ActiveMerchant.Base")
+
+    assert_statsd_increment("ActiveMerchant.Base.success", tags: nil) do
+      ActiveMerchant::Base.new.ssl_post(true)
+    end
+
+    assert_statsd_increment("ActiveMerchant.Base.failure", tags: nil) do
+      assert_raises(RuntimeError, "Not OK") do
+        ActiveMerchant::Base.new.ssl_post(false)
+      end
+    end
+  ensure
+    ActiveMerchant::Base.statsd_remove_count_success(:ssl_post, "ActiveMerchant.Base")
+  end
+
   def test_statsd_count
     ActiveMerchant::Gateway.statsd_count(:ssl_post, "ActiveMerchant.Gateway.ssl_post")
 
@@ -186,6 +220,36 @@ class StatsDInstrumentationTest < Minitest::Test
 
     assert_statsd_increment("subgateway.foo") do
       GatewaySubClass.new.purchase("foo")
+    end
+  ensure
+    ActiveMerchant::Gateway.statsd_remove_count(:ssl_post, metric_namer)
+  end
+
+  def test_statsd_count_with_tags_as_lambda
+    metric_namer = lambda { |object, args| "#{object.metric_name}.#{args.first}" }
+    metric_tagger = lambda { |_object, args| { "key": args.first } }
+    ActiveMerchant::Gateway.statsd_count(:ssl_post, metric_namer, tags: metric_tagger)
+
+    assert_statsd_increment("subgateway.foo", tags: { "key": "foo" }) do
+      GatewaySubClass.new.purchase("foo")
+    end
+    assert_statsd_increment("subgateway.bar", tags: { "key": "bar" }) do
+      GatewaySubClass.new.purchase("bar")
+    end
+  ensure
+    ActiveMerchant::Gateway.statsd_remove_count(:ssl_post, metric_namer)
+  end
+
+  def test_statsd_count_with_tags_as_proc
+    metric_namer = proc { |object, args| "#{object.metric_name}.#{args.first}" }
+    metric_tagger = proc { |_object, args| { "key": args.first } }
+    ActiveMerchant::Gateway.statsd_count(:ssl_post, metric_namer, tags: metric_tagger)
+
+    assert_statsd_increment("subgateway.foo", tags: { "key": "foo" }) do
+      GatewaySubClass.new.purchase("foo")
+    end
+    assert_statsd_increment("subgateway.bar", tags: { "key": "bar" }) do
+      GatewaySubClass.new.purchase("bar")
     end
   ensure
     ActiveMerchant::Gateway.statsd_remove_count(:ssl_post, metric_namer)
@@ -345,7 +409,7 @@ class StatsDInstrumentationTest < Minitest::Test
     client = StatsD::Instrument::Client.new(prefix: "prefix")
 
     ActiveMerchant::Gateway.statsd_count(:ssl_post, "ActiveMerchant.Gateway.ssl_post", client: client)
-    assert_statsd_increment("prefix.ActiveMerchant.Gateway.ssl_post", client: client) do
+    assert_statsd_increment("ActiveMerchant.Gateway.ssl_post", client: client) do
       ActiveMerchant::Gateway.new.purchase(true)
     end
   ensure
@@ -355,8 +419,12 @@ class StatsDInstrumentationTest < Minitest::Test
   def test_statsd_macro_can_disable_prefix
     client = StatsD::Instrument::Client.new(prefix: "foo")
     ActiveMerchant::Gateway.singleton_class.extend(StatsD::Instrument)
-    ActiveMerchant::Gateway.singleton_class.statsd_count_success(:sync,
-      "ActiveMerchant.Gateway.sync", no_prefix: true, client: client)
+    ActiveMerchant::Gateway.singleton_class.statsd_count_success(
+      :sync,
+      "ActiveMerchant.Gateway.sync",
+      no_prefix: true,
+      client: client,
+    )
 
     datagrams = client.capture { ActiveMerchant::Gateway.sync }
     assert_equal(1, datagrams.length)

@@ -200,6 +200,7 @@ module StatsD
       def increment(name, value = 1, sample_rate: nil, tags: nil, no_prefix: false)
         sample_rate ||= @default_sample_rate
         return StatsD::Instrument::VOID unless sample?(sample_rate)
+
         emit(datagram_builder(no_prefix: no_prefix).c(name, value, sample_rate, tags))
       end
 
@@ -217,6 +218,7 @@ module StatsD
 
         sample_rate ||= @default_sample_rate
         return StatsD::Instrument::VOID unless sample?(sample_rate)
+
         emit(datagram_builder(no_prefix: no_prefix).ms(name, value, sample_rate, tags))
       end
 
@@ -236,6 +238,7 @@ module StatsD
       def gauge(name, value, sample_rate: nil, tags: nil, no_prefix: false)
         sample_rate ||= @default_sample_rate
         return StatsD::Instrument::VOID unless sample?(sample_rate)
+
         emit(datagram_builder(no_prefix: no_prefix).g(name, value, sample_rate, tags))
       end
 
@@ -249,6 +252,7 @@ module StatsD
       def set(name, value, sample_rate: nil, tags: nil, no_prefix: false)
         sample_rate ||= @default_sample_rate
         return StatsD::Instrument::VOID unless sample?(sample_rate)
+
         emit(datagram_builder(no_prefix: no_prefix).s(name, value, sample_rate, tags))
       end
 
@@ -271,6 +275,7 @@ module StatsD
 
         sample_rate ||= @default_sample_rate
         return StatsD::Instrument::VOID unless sample?(sample_rate)
+
         emit(datagram_builder(no_prefix: no_prefix).d(name, value, sample_rate, tags))
       end
 
@@ -288,6 +293,7 @@ module StatsD
       def histogram(name, value, sample_rate: nil, tags: nil, no_prefix: false)
         sample_rate ||= @default_sample_rate
         return StatsD::Instrument::VOID unless sample?(sample_rate)
+
         emit(datagram_builder(no_prefix: no_prefix).h(name, value, sample_rate, tags))
       end
 
@@ -304,16 +310,16 @@ module StatsD
       # @yield The latency (execution time) of the block
       # @return The return value of the provided block will be passed through.
       def latency(name, sample_rate: nil, tags: nil, metric_type: nil, no_prefix: false)
-        start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        start = Process.clock_gettime(Process::CLOCK_MONOTONIC, :float_millisecond)
         begin
           yield
         ensure
-          stop = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          stop = Process.clock_gettime(Process::CLOCK_MONOTONIC, :float_millisecond)
 
           sample_rate ||= @default_sample_rate
           if sample?(sample_rate)
             metric_type ||= datagram_builder(no_prefix: no_prefix).latency_metric_type
-            latency_in_ms = 1000.0 * (stop - start)
+            latency_in_ms = stop - start
             emit(datagram_builder(no_prefix: no_prefix).send(metric_type, name, latency_in_ms, sample_rate, tags))
           end
         end
@@ -332,8 +338,14 @@ module StatsD
       #
       # @note Supported by the Datadog implementation only.
       def service_check(name, status, timestamp: nil, hostname: nil, tags: nil, message: nil, no_prefix: false)
-        emit(datagram_builder(no_prefix: no_prefix)._sc(name, status,
-          timestamp: timestamp, hostname: hostname, tags: tags, message: message))
+        emit(datagram_builder(no_prefix: no_prefix)._sc(
+          name,
+          status,
+          timestamp: timestamp,
+          hostname: hostname,
+          tags: tags,
+          message: message,
+        ))
       end
 
       # Emits an event. An event represents any record of activity noteworthy for engineers.
@@ -353,10 +365,20 @@ module StatsD
       def event(title, text, timestamp: nil, hostname: nil, aggregation_key: nil, priority: nil,
         source_type_name: nil, alert_type: nil, tags: nil, no_prefix: false)
 
-        emit(datagram_builder(no_prefix: no_prefix)._e(title, text, timestamp: timestamp,
-          hostname: hostname, tags: tags, aggregation_key: aggregation_key, priority: priority,
-          source_type_name: source_type_name, alert_type: alert_type))
+        emit(datagram_builder(no_prefix: no_prefix)._e(
+          title,
+          text,
+          timestamp: timestamp,
+          hostname: hostname,
+          tags: tags,
+          aggregation_key: aggregation_key,
+          priority: priority,
+          source_type_name: source_type_name,
+          alert_type: alert_type,
+        ))
       end
+
+      NO_CHANGE = Object.new
 
       # Instantiates a new StatsD client that uses the settings of the current client,
       # except for the provided overrides.
@@ -366,32 +388,37 @@ module StatsD
       #   will be disposed after the block returns
       # @return The return value of the block will be passed on as return value.
       def with_options(
-        sink: nil,
-        prefix: nil,
-        default_sample_rate: nil,
-        default_tags: nil,
-        datagram_builder_class: nil
+        sink: NO_CHANGE,
+        prefix: NO_CHANGE,
+        default_sample_rate: NO_CHANGE,
+        default_tags: NO_CHANGE,
+        datagram_builder_class: NO_CHANGE
       )
-        client = clone_with_options(sink: sink, prefix: prefix,
-          default_sample_rate: default_sample_rate, default_tags: default_tags,
-          datagram_builder_class: datagram_builder_class)
+        client = clone_with_options(
+          sink: sink,
+          prefix: prefix,
+          default_sample_rate: default_sample_rate,
+          default_tags: default_tags,
+          datagram_builder_class: datagram_builder_class,
+        )
 
         yield(client)
       end
 
       def clone_with_options(
-        sink: nil,
-        prefix: nil,
-        default_sample_rate: nil,
-        default_tags: nil,
-        datagram_builder_class: nil
+        sink: NO_CHANGE,
+        prefix: NO_CHANGE,
+        default_sample_rate: NO_CHANGE,
+        default_tags: NO_CHANGE,
+        datagram_builder_class: NO_CHANGE
       )
         self.class.new(
-          sink: sink || @sink,
-          prefix: prefix || @prefix,
-          default_sample_rate: default_sample_rate || @default_sample_rate,
-          default_tags: default_tags || @default_tags,
-          datagram_builder_class: datagram_builder_class || @datagram_builder_class,
+          sink: sink == NO_CHANGE ? @sink : sink,
+          prefix: prefix == NO_CHANGE ? @prefix : prefix,
+          default_sample_rate: default_sample_rate == NO_CHANGE ? @default_sample_rate : default_sample_rate,
+          default_tags: default_tags == NO_CHANGE ? @default_tags : default_tags,
+          datagram_builder_class:
+            datagram_builder_class == NO_CHANGE ? @datagram_builder_class : datagram_builder_class,
         )
       end
 

@@ -27,33 +27,44 @@ module StatsD
       end
     end
 
-    # Generates a metric name for an instrumented method.
-    # @private
-    # @return [String]
-    def self.generate_metric_name(name, callee, *args)
-      name.respond_to?(:call) ? name.call(callee, args).gsub("::", ".") : name.gsub("::", ".")
-    end
+    class << self
+      # Generates a metric name for an instrumented method.
+      # @private
+      # @return [String]
+      def generate_metric_name(name, callee, *args)
+        name.respond_to?(:call) ? name.call(callee, args).gsub("::", ".") : name.gsub("::", ".")
+      end
 
-    # Even though this method is considered private, and is no longer used internally,
-    # applications in the wild rely on it. As a result, we cannot remove this method
-    # until the next major version.
-    #
-    # @deprecated Use Process.clock_gettime(Process::CLOCK_MONOTONIC) instead.
-    def self.current_timestamp
-      Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    end
+      # Generates the tags for an instrumented method.
+      # @private
+      # @return [Array[String]]
+      def generate_tags(tags, callee, *args)
+        return if tags.nil?
 
-    # Even though this method is considered private, and is no longer used internally,
-    # applications in the wild rely on it. As a result, we cannot remove this method
-    # until the next major version.
-    #
-    # @deprecated You can implement similar functionality yourself using
-    #   `Process.clock_gettime(Process::CLOCK_MONOTONIC)`. Think about what will
-    #   happen if an exception happens during the block execution though.
-    def self.duration
-      start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      yield
-      Process.clock_gettime(Process::CLOCK_MONOTONIC) - start
+        tags.respond_to?(:call) ? tags.call(callee, args) : tags
+      end
+
+      # Even though this method is considered private, and is no longer used internally,
+      # applications in the wild rely on it. As a result, we cannot remove this method
+      # until the next major version.
+      #
+      # @deprecated Use Process.clock_gettime(Process::CLOCK_MONOTONIC) instead.
+      def current_timestamp
+        Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      end
+
+      # Even though this method is considered private, and is no longer used internally,
+      # applications in the wild rely on it. As a result, we cannot remove this method
+      # until the next major version.
+      #
+      # @deprecated You can implement similar functionality yourself using
+      #   `Process.clock_gettime(Process::CLOCK_MONOTONIC)`. Think about what will
+      #   happen if an exception happens during the block execution though.
+      def duration
+        start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        yield
+        Process.clock_gettime(Process::CLOCK_MONOTONIC) - start
+      end
     end
 
     # Adds execution duration instrumentation to a method as a timing.
@@ -61,6 +72,8 @@ module StatsD
     # @param method [Symbol] The name of the method to instrument.
     # @param name [String, #call] The name of the metric to use. You can also pass in a
     #    callable to dynamically generate a metric name
+    # @param tags [Hash, #call] The tags to be associated with the metric. You can also
+    #    pass in a callable to dynamically generate the tags key and values
     # @param metric_options (see StatsD#measure)
     # @return [void]
     def statsd_measure(method, name, sample_rate: nil, tags: nil, no_prefix: false, client: nil)
@@ -68,7 +81,8 @@ module StatsD
         define_method(method) do |*args, &block|
           client ||= StatsD.singleton_client
           key = StatsD::Instrument.generate_metric_name(name, self, *args)
-          client.measure(key, sample_rate: sample_rate, tags: tags, no_prefix: no_prefix) do
+          generated_tags = StatsD::Instrument.generate_tags(tags, self, *args)
+          client.measure(key, sample_rate: sample_rate, tags: generated_tags, no_prefix: no_prefix) do
             super(*args, &block)
           end
         end
@@ -88,7 +102,8 @@ module StatsD
         define_method(method) do |*args, &block|
           client ||= StatsD.singleton_client
           key = StatsD::Instrument.generate_metric_name(name, self, *args)
-          client.distribution(key, sample_rate: sample_rate, tags: tags, no_prefix: no_prefix) do
+          generated_tags = StatsD::Instrument.generate_tags(tags, self, *args)
+          client.distribution(key, sample_rate: sample_rate, tags: generated_tags, no_prefix: no_prefix) do
             super(*args, &block)
           end
         end
@@ -104,24 +119,26 @@ module StatsD
     # @param method (see #statsd_measure)
     # @param name (see #statsd_measure)
     # @param metric_options (see #statsd_measure)
+    # @param tag_error_class add a <tt>error_class</tt> tag with the error class when an error is thrown
     # @yield You can pass a block to this method if you want to define yourself what is a successful call
     #   based on the return value of the method.
     # @yieldparam result The return value of the instrumented method.
     # @yieldreturn [Boolean] Return true iff the return value is considered a success, false otherwise.
     # @return [void]
     # @see #statsd_count_if
-    def statsd_count_success(method, name, sample_rate: nil, tags: nil, no_prefix: false, client: nil)
+    def statsd_count_success(method, name, sample_rate: nil,
+      tags: nil, no_prefix: false, client: nil, tag_error_class: false)
       add_to_method(method, name, :count_success) do
         define_method(method) do |*args, &block|
           truthiness = result = super(*args, &block)
-        rescue
+        rescue => error
           truthiness = false
           raise
         else
           if block_given?
             begin
               truthiness = yield(result)
-            rescue
+            rescue => error
               truthiness = false
             end
           end
@@ -130,7 +147,10 @@ module StatsD
           client ||= StatsD.singleton_client
           suffix = truthiness == false ? "failure" : "success"
           key = StatsD::Instrument.generate_metric_name(name, self, *args)
-          client.increment("#{key}.#{suffix}", sample_rate: sample_rate, tags: tags, no_prefix: no_prefix)
+          generated_tags = StatsD::Instrument.generate_tags(tags, self, *args)
+          generated_tags = Helpers.add_tag(generated_tags, :error_class, error.class.name) if tag_error_class && error
+
+          client.increment("#{key}.#{suffix}", sample_rate: sample_rate, tags: generated_tags, no_prefix: no_prefix)
         end
       end
     end
@@ -167,7 +187,8 @@ module StatsD
           if truthiness
             client ||= StatsD.singleton_client
             key = StatsD::Instrument.generate_metric_name(name, self, *args)
-            client.increment(key, sample_rate: sample_rate, tags: tags, no_prefix: no_prefix)
+            generated_tags = StatsD::Instrument.generate_tags(tags, self, *args)
+            client.increment(key, sample_rate: sample_rate, tags: generated_tags, no_prefix: no_prefix)
           end
         end
       end
@@ -187,7 +208,8 @@ module StatsD
         define_method(method) do |*args, &block|
           client ||= StatsD.singleton_client
           key = StatsD::Instrument.generate_metric_name(name, self, *args)
-          client.increment(key, sample_rate: sample_rate, tags: tags, no_prefix: no_prefix)
+          generated_tags = StatsD::Instrument.generate_tags(tags, self, *args)
+          client.increment(key, sample_rate: sample_rate, tags: generated_tags, no_prefix: no_prefix)
           super(*args, &block)
         end
       end
@@ -274,7 +296,12 @@ module StatsD
       if instrumentation_module.respond_to?(:ruby2_keywords, true)
         instrumentation_module.send(:ruby2_keywords, method)
       end
-      prepend(instrumentation_module) unless self < instrumentation_module
+
+      if self < instrumentation_module
+        return
+      end
+
+      prepend(instrumentation_module)
     end
 
     def remove_from_method(method, name, action)
@@ -338,8 +365,21 @@ module StatsD
     # @!method service_check(name, status, tags: nil, hostname: nil, timestamp: nil, message: nil)
     #   (see StatsD::Instrument::Client#service_check)
 
-    def_delegators :singleton_client, :increment, :gauge, :set, :measure,
-      :histogram, :distribution, :event, :service_check
+    def_delegators :singleton_client,
+      :increment,
+      :gauge,
+      :set,
+      :measure,
+      :histogram,
+      :distribution,
+      :event,
+      :service_check
+
+    private
+
+    def extended(klass)
+      klass.statsd_instrumentations # eagerly define
+    end
   end
 end
 
@@ -359,6 +399,6 @@ require "statsd/instrument/environment"
 require "statsd/instrument/helpers"
 require "statsd/instrument/assertions"
 require "statsd/instrument/expectation"
-require "statsd/instrument/matchers" if defined?(::RSpec)
-require "statsd/instrument/railtie" if defined?(::Rails::Railtie)
+require "statsd/instrument/matchers" if defined?(RSpec)
+require "statsd/instrument/railtie" if defined?(Rails::Railtie)
 require "statsd/instrument/strict" if ENV["STATSD_STRICT_MODE"]

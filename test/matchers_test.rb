@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "statsd/instrument/matchers"
+require "rspec/mocks/argument_matchers"
 
 class MatchersTest < Minitest::Test
   def test_statsd_increment_matched
@@ -31,6 +32,37 @@ class MatchersTest < Minitest::Test
     refute(RSpec::Matchers::BuiltIn::Compound::And.new(matcher_1, matcher_2).matches?(lambda {
       StatsD.increment("counter", tags: ["a"])
       StatsD.increment("counter", tags: ["a"])
+    }))
+  end
+
+  def test_statsd_increment_compound_using_and_matched
+    matcher_1 = StatsD::Instrument::Matchers::Increment.new(:c, "counter", times: 1, tags: ["a"])
+    matcher_2 = StatsD::Instrument::Matchers::Increment.new(:c, "counter", times: 1, tags: ["b"])
+
+    assert(matcher_1.and(matcher_2).matches?(lambda {
+      StatsD.increment("counter", tags: ["a"])
+      StatsD.increment("counter", tags: ["b"])
+    }))
+  end
+
+  def test_statsd_increment_compound_using_and_not_matched
+    matcher_1 = StatsD::Instrument::Matchers::Increment.new(:c, "counter", times: 1, tags: ["a"])
+    matcher_2 = StatsD::Instrument::Matchers::Increment.new(:c, "counter", times: 1, tags: ["b"])
+
+    refute(matcher_1.and(matcher_2).matches?(lambda {
+      StatsD.increment("counter", tags: ["a"])
+      StatsD.increment("counter", tags: ["c"])
+    }))
+  end
+
+  def test_statsd_increment_compound_without_explicit_tags_using_and_matched
+    matcher_1 = StatsD::Instrument::Matchers::Increment.new(:c, "first_counter", times: 2)
+    matcher_2 = StatsD::Instrument::Matchers::Increment.new(:c, "second_counter", times: 1)
+
+    assert(matcher_1.and(matcher_2).matches?(lambda {
+      StatsD.increment("first_counter", tags: ["a"])
+      StatsD.increment("first_counter", tags: ["b"])
+      StatsD.increment("second_counter", tags: ["c"])
     }))
   end
 
@@ -81,6 +113,13 @@ class MatchersTest < Minitest::Test
   def test_statsd_increment_with_tags_matched
     assert(StatsD::Instrument::Matchers::Increment.new(:c, "counter", tags: ["a", "b"])
       .matches?(lambda { StatsD.increment("counter", tags: ["a", "b"]) }))
+  end
+
+  def test_statsd_increment_with_subset_matcher
+    include_matcher = RSpec::Matchers::BuiltIn::Include.new("foo:bar")
+    final = RSpec::Matchers::AliasedMatcher.new(include_matcher, :include)
+    assert(StatsD::Instrument::Matchers::Increment.new(:c, "counter", tags: final)
+      .matches?(lambda { StatsD.increment("counter", tags: ["foo:bar", "bar:baz"]) }))
   end
 
   def test_statsd_increment_with_tags_not_matched

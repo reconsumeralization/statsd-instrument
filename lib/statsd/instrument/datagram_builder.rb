@@ -5,28 +5,18 @@ module StatsD
     # @note This class is part of the new Client implementation that is intended
     #   to become the new default in the next major release of this library.
     class DatagramBuilder
-      unless Regexp.method_defined?(:match?) # for ruby 2.3
-        module RubyBackports
-          refine Regexp do
-            def match?(str)
-              match(str) != nil
+      class << self
+        def unsupported_datagram_types(*types)
+          types.each do |type|
+            define_method(type) do |_, _, _, _|
+              raise NotImplementedError, "Type #{type} metrics are not supported by #{self.class.name}."
             end
           end
         end
 
-        using(RubyBackports)
-      end
-
-      def self.unsupported_datagram_types(*types)
-        types.each do |type|
-          define_method(type) do |_, _, _, _|
-            raise NotImplementedError, "Type #{type} metrics are not supported by #{self.class.name}."
-          end
+        def datagram_class
+          StatsD::Instrument::Datagram
         end
-      end
-
-      def self.datagram_class
-        StatsD::Instrument::Datagram
       end
 
       def initialize(prefix: nil, default_tags: nil)
@@ -79,10 +69,12 @@ module StatsD
       # @return [Array<String>, nil] the list of tags in canonical form.
       def normalize_tags(tags)
         return [] unless tags
+
         tags = tags.map { |k, v| "#{k}:#{v}" } if tags.is_a?(Hash)
 
         # Fast path when no string replacement is needed
         return tags unless tags.any? { |tag| /[|,]/.match?(tag) }
+
         tags.map { |tag| tag.tr("|,", "") }
       end
 
@@ -90,6 +82,7 @@ module StatsD
       def normalize_name(name)
         # Fast path when no normalization is needed to avoid copying the string
         return name unless /[:|@]/.match?(name)
+
         name.tr(":|@", "_")
       end
 

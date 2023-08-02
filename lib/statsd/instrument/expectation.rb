@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "set"
+
 module StatsD
   module Instrument
     # @private
@@ -32,11 +34,11 @@ module StatsD
 
       attr_accessor :times, :type, :name, :value, :sample_rate, :tags
 
-      def initialize(client: StatsD.singleton_client, type:, name:, value: nil,
+      def initialize(client: nil, type:, name:, value: nil,
         sample_rate: nil, tags: nil, no_prefix: false, times: 1)
 
         @type = type
-        @name = no_prefix || !client.prefix ? name : "#{client.prefix}.#{name}"
+        @name = no_prefix ? name : StatsD::Instrument::Helpers.prefix_metric(name, client: client)
         @value = normalized_value_for_type(type, value) if value
         @sample_rate = sample_rate
         @tags = normalize_tags(tags)
@@ -78,19 +80,6 @@ module StatsD
 
       private
 
-      # Needed for normalize_tags
-      unless Regexp.method_defined?(:match?) # for ruby 2.3
-        module RubyBackports
-          refine Regexp do
-            def match?(str)
-              (self =~ str) != nil
-            end
-          end
-        end
-
-        using(RubyBackports)
-      end
-
       # @private
       #
       # Utility function to convert tags to the canonical form.
@@ -105,10 +94,12 @@ module StatsD
       #   to ensure that this logic matches the logic of the active datagram builder.
       def normalize_tags(tags)
         return [] unless tags
+
         tags = tags.map { |k, v| "#{k}:#{v}" } if tags.is_a?(Hash)
 
         # Fast path when no string replacement is needed
         return tags unless tags.any? { |tag| /[|,]/.match?(tag) }
+
         tags.map { |tag| tag.tr("|,", "") }
       end
     end
